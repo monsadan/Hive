@@ -1,0 +1,335 @@
+---
+title: "Linear regression"
+author: "DMM"
+date: "10/22/2019"
+output: github_document:
+    html_preview: true
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Calling libraries
+```{R libraries}
+library(rcompanion)
+library(dplyr)
+library(tidyverse)
+library(zoo)
+library(aod)
+library(ggplot2)
+library(TTR)
+library(readr)
+library(data.table)
+library(lubridate)
+```
+
+Importing the datasets and merging the yearly datasets in one 
+```{R 2014 to 2019 datasets}
+
+X2014_samples <- read_csv("2014-samples.csv")
+X2015_samples <- read_csv("2015-samples.csv")
+X2016_samples <- read_csv("2016-samples.csv")
+X2017_samples <- read_csv("2017-samples.csv")
+X2018_samples <- read_csv("2018-samples.csv")
+X2019_samples <- read_csv("2019-samples.csv")
+
+Full_data <- rbind(X2014_samples,X2015_samples,X2016_samples,X2017_samples,X2018_samples,X2019_samples)
+
+```
+Making the information graph
+
+```{R Full graph}
+ggplot(data = Full_data) +
+geom_point(mapping = aes(x =Full_data$timestamp , y = Full_data$hive_id, color="blue", alpha = 1/10))
+```
+
+```{R Chunked graph}
+hive_select <- sample(Full_data$hive_id, 25, replace = FALSE, prob = NULL)
+
+graph_sample_full <- subset(Full_data, Full_data$hive_id == c(hive_select))
+  
+ggplot(data = graph_sample_full) +
+geom_point(mapping = aes(x =graph_sample_full$timestamp , y = graph_sample_full$hive_id, color = "Blue", alpha= 1/10))
+
+graph_sample_year <- subset(Full_data, Full_data$hive_id == c(hive_select) & year(Full_data$timestamp)=="2019")
+  
+ggplot(data = graph_sample_year) +
+geom_point(mapping = aes(x =graph_sample_year$timestamp , y = graph_sample_year$hive_id, color = "Blue", alpha= 1/10))
+```
+
+Eliminating NA and extreme values
+```{R Wrangling}
+#There is no NA values on the Weight column
+analysis_data <- subset(Full_data, between(Full_data$weight, (mean(Full_data$weight)-3*sd(Full_data$weight)),(mean(Full_data$weight)+3*sd(Full_data$weight))))
+
+analysis_data <- subset(analysis_data, analysis_data$weight>0)
+
+```
+
+
+Selecting a random hive to analyse the data, checking normality and subseting the columns that we need.
+```{R scale_id=1064}
+#Picked a random hive subset to make the model
+Hivesample <- subset(analysis_data, analysis_data$hive_id == 11)
+
+plotNormalDensity(Hivesample$weight)
+
+summary(Hivesample$weight)
+
+#Graph between weight and temperature
+ggplot(data = Hivesample) +
+geom_point(mapping = aes(x = Hivesample$weight, y = Hivesample$temperature))
+
+#Getting the two use columns to the analysis
+use_hive <- subset(Hivesample, hive_id=11, select = c(weight))
+Test_use_hive <- use_hive
+
+
+
+```
+
+#LOG REGRESION WITH MEAN AND SD TO IDENTIFY EVENTS
+```{R scale_id=1064}
+library(plyr)
+use_hive_mean <- mean(use_hive$weight)
+use_hive_standev <- sd(use_hive$weight)
+Minlog <- use_hive_mean - 1.5*use_hive_standev
+Maxlog <- use_hive_mean + 1.5*use_hive_standev
+
+use_hive$Event <- between(use_hive$weight, Minlog, Maxlog)
+
+use_hive$Event  <- as.numeric(use_hive$Event)
+
+use_hive$NEvent <- ifelse(use_hive$Event==1,"a","b")
+
+use_hive$Event <- ifelse(use_hive$NEvent=="a",0,1)
+
+use_hive$Event <- as.factor(use_hive$Event)
+
+use_hive$NEvent <- NULL
+
+use_hiveLogit <- glm(use_hive$Event ~ use_hive$weight, data = use_hive, family = "binomial")
+
+summary(use_hiveLogit)
+
+confint(use_hiveLogit)
+
+wald.test(b= coef(use_hiveLogit), Sigma = vcov(use_hiveLogit), Terms = 1 )
+
+exp(coef(use_hiveLogit))
+
+exp(cbind(OR=coef(use_hiveLogit), confint(use_hiveLogit)))
+
+plot(use_hiveLogit)
+
+```
+#Moving average on dataset
+```{R scale_id=1064}
+hour_dif<- use_hive[2,1]-use_hive[1,1]
+factor <- if (hour_dif[1,1]==15){4}else if (hour_dif[1,1]==30){2}else{1}
+
+#HALFDAY MOVING AVERAGE
+use_hive$halfday_movavg <- rollmean(use_hive$weight, 12*factor, fill = NA, align = "right")
+use_hive$Dif_halfday_movavg <- abs(use_hive$weight - use_hive$halfday_movavg)
+use_hive$Halfday_standev <- runSD(use_hive$weight, 12*factor, runMean(use_hive$weight, 12*factor))
+
+ggplot(data = use_hive) +
+geom_point(mapping = aes(y = use_hive$halfday_movavg, x = use_hive$Dif_halfday_movavg, color = use_hive$Event, alpha= 1/10))+
+  labs(x='Difference half day moving average', y='Half day moving average', title='Half day moving average')
+
+
+#QUARTER DAY MOVING AVERAGE
+use_hive$fullday_movavg <- rollmean(use_hive$weight, 24*factor, fill = NA, align = "right")
+use_hive$Dif_fullday_movavg <- abs(use_hive$weight - use_hive$fullday_movavg)
+use_hive$fullday_standev <- runSD(use_hive$weight, 24*factor, runMean(use_hive$weight, 24*factor))
+
+ggplot(data = use_hive) +
+geom_point(mapping = aes(y = use_hive$fullday_movavg, x = use_hive$Dif_fullday_movavg, color = use_hive$Event, alpha= 1/10))+
+  labs(x='Difference full day moving average', y='Full day moving average', title='Full day moving average')
+
+#EIGHTS MOVING AVERAGE
+use_hive$eights_movavg <- rollmean(use_hive$weight, 3*factor, fill = NA, align = "right")
+use_hive$Dif_eights_movavg <- abs(use_hive$weight - use_hive$eights_movavg)
+use_hive$eights_standev <- runSD(use_hive$weight, 3*factor, runMean(use_hive$weight, 3*factor))
+
+ggplot(data = use_hive) +
+geom_point(mapping = aes(y = use_hive$eights_movavg, x = use_hive$Dif_eights_movavg, color = use_hive$Event, alpha= 1/10))+
+  labs(x='Difference eights moving average', y='Eights moving average', title='Eights moving average')
+```
+#Creating a new dataset with the date splitter for the time series analysis
+```{R Splitting to create a time series}
+as.Date(use_hive$timestamp)
+hive_hourly<- use_hive %>% mutate(Month= month(use_hive$timestamp), Hour= hour(use_hive$timestamp), Year= year(use_hive$timestamp), Day = day(use_hive$timestamp)) %>% group_by(Year, Month, Day, Hour) %>% summarise(Avg_weight = mean(weight))
+
+
+
+```
+
+
+#Time series creation
+```{R scale_id=1064}
+#When i put the start and end parameters this give me an error, besides I'm not sure about the frequency for quartely and hourly data
+First_obs <- first(x = use_hive$timestamp)
+Last_obs <- last(x = use_hive$timestamp)
+
+hs.ts <- ts(use_hive$weight )
+plot(hs.ts)
+decompose(hs.ts)
+```
+
+```{r testing the Logit regresion}
+
+prediction <- predict(use_hiveLogit, Test_use_hive)
+Test_use_hive$Logit_test <- prediction
+
+```
+
+```{R reshape test}
+library(reshape2)
+odd_data <- analysis_data[1:1000000,c(2,3,9)]
+
+idstr <- paste("H",odd_data$hive_id)
+odd_data <- cbind(odd_data, idstr)
+odd_data <- odd_data[,-c(3)]
+odd <- dcast(odd_data, odd_data$timestamp ~ odd_data$idstr, value.var = "weight", sum)
+
+```
+
+```{R reshape test}
+library(reshape2)
+
+odd_full <- subset(analysis_data, year(analysis_data$timestamp)==2019)
+odd_full <- subset(analysis_data, month(analysis_data$timestamp)==5)
+odd_sel <- sample(odd_full$hive_id, 500, replace = FALSE, prob = NULL)
+odd_sample <- subset(odd_full, odd_full$hive_id== c(odd_sel))
+odd_data <- odd_sample[,c(2,3,9)]
+
+#odd_spread <- spread(odd_data, idstr, weight)
+
+idstr <- paste("H",odd_data$hive_id)
+odd_data <- cbind(odd_data, idstr)
+odd_data <- odd_data[,-c(3)]
+
+odd <- dcast(odd_data, odd_data$timestamp ~ odd_data$idstr, value.var = "weight", sum)
+#odd2 <- reshape(odd_data, direction = "wide", idvar = odd_data$timestamp, timevar = odd_data$idstr, v.names=odd_data$weight)
+odd <- odd_data %>% 
+  pivot_wider(id_cols = timestamp, names_from = idstr, values_from = weight, values_fn = list(weight = mean))
+
+```
+
+```{R Spread try}
+
+
+wideodd <- odd_sample %>% spread(key = "hive_id" , value= "weight" )
+spreadodd <- wideodd[,-c(1,3,4,5,6,7,8)]
+
+```
+
+```{R Spread try}
+
+pivotodd <- pivot_wider(odd_data, id_cols = "timestamp", names_from = "idstr", values_from = "weight")
+
+```
+
+```{R Transpose of the dataset to use oddstream}
+hive_list <- unique(analysis_data$hive_id)
+for (val in hive_list) {
+  subtest <- subset(analysis_data, val= analysis_data$hive_id)
+  dataodd <- cbind(dataodd, subtest)
+  
+}
+```
+
+```{R Oddstream test}
+library(oddstream)
+
+
+set.seed(500)
+#dt = sort(sample(nrow(odd), nrow(odd)*.7))
+# 
+# train<-odd[dt, -1]
+# test<-odd[-dt, -1]
+
+
+
+train <- ts(odd_pivot_imputed[1:1353, c(2, 286) ])
+test <- ts(odd_pivot_imputed[1354:1933, c(2, 286) ])
+odd_results <- oddstream::find_odd_streams(train_data = train, test_stream = test, trials = 100)
+
+```
+
+
+
+```{R Remove NA lines}
+nona <- spreadodd %>% drop_na()
+
+
+```
+
+
+```{R Subset of year and month for oddstream / Wrangling}
+year_odd = 2019
+month_odd = 5
+
+odd_filter <- Full_data %>% select(timestamp, weight, hive_id) %>% filter(year(timestamp)==year_odd) %>% filter(month(timestamp)==month_odd)
+  
+odd_set <- odd_filter %>% subset(weight>0) %>% distinct()
+odd_set2 <- round_date(ymd_hms(odd_filter$timestamp[1:286001]), "15 mins")
+oddset3 <- cbind(odd_set, odd_set2)
+```
+
+```{R using the wide fuctions}
+
+#odd_cast <- odd_set %>% dcast(timestamp ~ hive_id, value.var = "weight", sum)
+
+#odd_spread <- odd_set %>% spread(key = hive_id , value= weight)
+
+odd_pivot <- oddset3 %>% pivot_wider(id_cols= odd_set2, names_from = hive_id, values_from = weight, values_fn = list(weight = mean))
+
+column_mean <- colMeans(odd_pivot[,2:290], na.rm = TRUE)
+
+
+#odd_pivot_fin <- replace_na(odd_pivot, column_mean)
+
+impute.mean <- function(x){
+  replace(x, is.na(x) | is.nan(x) | is.infinite(x), mean(x[!is.na(x) & !is.nan(x) & !is.infinite(x)]))
+}
+#odd_pivo2 <- as.numeric(odd_pivot)
+odd_pivot_imputed <- odd_pivot %>% 
+  mutate_if(is.double, impute.mean)
+
+```
+
+
+```{R For test reshaping}
+test_sample <- sample(odd_filter$hive_id, 3, replace = FALSE, prob = NULL)
+
+for (val in test_sample) {
+  sub <- odd_filter %>% subset(val== odd_filter$hive_id)
+  #sub %>%  rename(val= weight) %>% colnames()
+  #sub2 <- sub
+  #dataodd <- cbind(sub2, sub)
+  #sub2 <- dataodd
+  a= val
+}
+
+```
+
+```{R Anomalize}
+library(anomalize)
+anom <- Hivesample[,2:3]
+anom2 <- subset(anom, year(anom$timestamp)==2018)
+
+anom %>% time_decompose(weight) %>% anomalize(remainder) %>% time_recompose() %>% plot_anomalies(time_recomposed = TRUE, ncol = 3, alpha_dots = 0.25)
+anom2 %>% time_decompose(weight) %>% anomalize(remainder) %>% time_recompose() %>% plot_anomalies(time_recomposed = TRUE, ncol = 3, alpha_dots = 0.25)
+
+```
+
+```{R Twitter anomalies}
+library(AnomalyDetection)
+res <- AnomalyDetectionTs(anom, max_anoms = 0.02, direction ="both", plot = TRUE)
+res$plot
+
+
+```
